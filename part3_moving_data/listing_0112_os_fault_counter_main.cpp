@@ -23,26 +23,30 @@
    I have no idea. */
 #define _CRT_SECURE_NO_WARNINGS
 
-#include <cstdio>
-#include <cstdlib>
-#include <cassert>
-
-#include <sys/mman.h>
-
-#include "linux_metrics.cpp"
+#include <stdio.h>
+#include <stdint.h>
 
 typedef uint8_t u8;
 typedef uint32_t u32;
 typedef uint64_t u64;
 
+typedef int32_t b32;
+
 typedef float f32;
 typedef double f64;
 
-// #define ArrayCount(Array) (sizeof(Array)/sizeof((Array)[0]))
+#define ArrayCount(Array) (sizeof(Array)/sizeof((Array)[0]))
 
+#include "listing_0108_platform_metrics.cpp"
 
 int main(int ArgCount, char **Args)
 {
+    // NOTE(casey): Since we do not use these functions in this particular build, we reference their pointers
+    // here to prevent the compiler from complaining about "unused functions".
+    (void)&EstimateCPUTimerFreq;
+    
+    InitializeOSMetrics();
+    
     if(ArgCount == 2)
     {
         u64 PageSize = 4096; // NOTE(casey): This may not be the OS page size! It is merely our testing page size.
@@ -54,31 +58,21 @@ int main(int ArgCount, char **Args)
         for(u64 TouchCount = 0; TouchCount <= PageCount; ++TouchCount)
         {
             u64 TouchSize = PageSize*TouchCount;
-	    u8 *Data = (u8 *) mmap(
-		    NULL,
-		    TotalSize,
-		    PROT_READ | PROT_WRITE,
-		    MAP_PRIVATE | MAP_ANONYMOUS,
-		    -1,
-		    0
-	    );
+            u8 *Data = (u8 *)VirtualAlloc(0, TotalSize, MEM_RESERVE|MEM_COMMIT, PAGE_READWRITE);
             if(Data)
             {
-		u64 Faults;
-		assert(ReadPageFaults(&Faults) == 0);
-                u64 StartFaultCount = Faults;
+                u64 StartFaultCount = ReadOSPageFaultCount();
                 for(u64 Index = 0; Index < TouchSize; ++Index)
                 {
                     Data[Index] = (u8)Index;
                 }
-		assert(ReadPageFaults(&Faults) == 0);
-                u64 EndFaultCount = Faults;
+                u64 EndFaultCount = ReadOSPageFaultCount();
                 
                 u64 FaultCount = EndFaultCount - StartFaultCount;
                 
                 printf("%llu, %llu, %llu, %lld\n", PageCount, TouchCount, FaultCount, (FaultCount - TouchCount));
                 
-		munmap(Data, TotalSize);
+                VirtualFree(Data, 0, MEM_RELEASE);
             }
             else
             {

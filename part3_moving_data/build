@@ -1,0 +1,71 @@
+#!/usr/bin/env bash
+# Build a single listing's assembly for viewing, e.g.:
+#   ./build 110            -> out/listing_0110.s
+#   ./build 110 -O0        -> extra args are forwarded to clang++
+#
+# This project is written single-TU style: most listing_NNNN_*.cpp files are
+# fragments with no main() of their own, meant to be #include'd by a later
+# listing_MMMM_..._main.cpp. To view listing N's assembly, we actually have
+# to compile whichever _main.cpp pulls it in.
+#
+# Resolution order for listing N:
+#   1. linux_drivers/listing_000N_main.cpp, if present -- a hand-written
+#      stand-in for listings whose official _main.cpp is Windows-only
+#      (uses windows.h / ReadFile / etc.) and can't build on Linux at all.
+#   2. listing_000N_*.cpp itself, if it already contains int main().
+#   3. The lowest-numbered *_main.cpp (in this dir or linux_drivers/) whose
+#      source contains '#include "listing_000N_...cpp"'.
+
+set -euo pipefail
+
+if [ $# -lt 1 ]; then
+    echo "Usage: $0 <listing-number> [extra clang++ flags]" >&2
+    exit 1
+fi
+
+NUM=$(printf "%04d" "$1")
+shift
+EXTRA_FLAGS=("$@")
+
+DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$DIR"
+
+BUILD_SRC=""
+
+if [ -f "linux_drivers/listing_${NUM}_main.cpp" ]; then
+    BUILD_SRC="linux_drivers/listing_${NUM}_main.cpp"
+    echo "using Linux driver override: $BUILD_SRC"
+else
+    SRC=$(ls listing_${NUM}_*.cpp 2>/dev/null | head -n1 || true)
+
+    if [ -z "$SRC" ]; then
+        echo "ERROR: no listing_${NUM}_*.cpp found in $DIR" >&2
+        exit 1
+    fi
+
+    if grep -q '^int main' "$SRC"; then
+        BUILD_SRC="$SRC"
+    else
+        CANDIDATES=$( { ls *_main.cpp 2>/dev/null; ls linux_drivers/*_main.cpp 2>/dev/null; } \
+            | xargs -r grep -l "#include \"${SRC}\"" 2>/dev/null || true)
+
+        if [ -z "$CANDIDATES" ]; then
+            echo "ERROR: ${SRC} has no main() and no *_main.cpp includes it" >&2
+            exit 1
+        fi
+
+        BUILD_SRC=$(for f in $CANDIDATES; do
+            n=$(echo "$f" | grep -oP 'listing_\K[0-9]{4}')
+            echo "$n $f"
+        done | sort -n | head -n1 | cut -d' ' -f2)
+
+        echo "listing ${NUM} (${SRC}) has no main(); building via ${BUILD_SRC}"
+    fi
+fi
+
+mkdir -p out
+OUT="out/listing_${NUM}.s"
+
+clang++ -mavx2 -O3 -g -Wall -masm=intel -S "$BUILD_SRC" -o "$OUT" "${EXTRA_FLAGS[@]}"
+
+echo "wrote $OUT"
